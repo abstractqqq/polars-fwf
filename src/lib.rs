@@ -1,8 +1,9 @@
 mod core;
 
-use arrow_array::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+use arrow_array::ffi::{FFI_ArrowArray, FFI_ArrowSchema, from_ffi};
 use arrow_array::{Array, RecordBatch, StructArray};
 use pyo3::prelude::*;
+use std::fs::File;
 
 #[pyclass(name = "DType", eq, eq_int)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -380,6 +381,73 @@ impl PyFwfReader {
     }
 }
 
+#[pyclass(name = "FwfWriter")]
+pub struct PyFwfWriter {
+    inner: core::FwfWriter<File>,
+}
+
+#[pymethods]
+impl PyFwfWriter {
+    #[new]
+    #[pyo3(signature = (path, specs, number_padding=b' ', str_padding=b' ', pad_str_end=true, decimals=3, bool_treatment=("T".to_string(), "F".to_string(), "null".to_string())))]
+    pub fn new(
+        path: &str,
+        specs: Vec<PyFieldSpec>,
+        number_padding: u8,
+        str_padding: u8,
+        pad_str_end: bool,
+        decimals: usize,
+        bool_treatment: (String, String, String),
+    ) -> PyResult<Self> {
+        let core_specs = specs
+            .into_iter()
+            .map(|s| {
+                let strategy = match s.error_strategy {
+                    PyErrorStrategy::PushNull() => core::ErrorStrategy::PushNull,
+                    PyErrorStrategy::Fill(ref bytes) => {
+                        core::ErrorStrategy::Fill(parse_fill_value(&s.dtype, bytes))
+                    }
+                };
+                core::FieldSpec {
+                    name: s.name,
+                    offset: s.offset,
+                    length: s.length,
+                    dtype: s.dtype.into(),
+                    padding: s.padding,
+                    error_strategy: strategy,
+                }
+            })
+            .collect();
+
+        let file = File::create(path)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("{e}")))?;
+
+        let inner = core::FwfWriter::new(
+            file,
+            core_specs,
+            number_padding,
+            str_padding,
+            pad_str_end,
+            decimals,
+            bool_treatment,
+        );
+        Ok(Self { inner })
+    }
+
+    pub fn write_batch(&mut self, py: Python, capsules: (PyObject, PyObject)) -> PyResult<()> {
+        let batch = capsule_to_record_batch(py, capsules)?;
+        self.inner
+            .write_batch(&batch)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("{e}")))
+    }
+
+    pub fn flush(&mut self) -> PyResult<()> {
+        self.inner
+            .flush()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("{e}")))
+    }
+}
+
 unsafe extern "C" fn array_destructor(capsule: *mut pyo3::ffi::PyObject) {
     let ptr = unsafe { pyo3::ffi::PyCapsule_GetPointer(capsule, c"arrow_array".as_ptr()) };
     if !ptr.is_null() {
@@ -424,7 +492,37 @@ fn record_batch_to_capsule(py: Python, batch: RecordBatch) -> PyResult<PyObject>
         let array_obj = PyObject::from_owned_ptr(py, array_capsule);
         let schema_obj = PyObject::from_owned_ptr(py, schema_capsule);
 
-        Ok((array_obj, schema_obj).into_py(py))
+        Ok((schema_obj, array_obj).into_py(py))
+    }
+}
+
+fn capsule_to_record_batch(py: Python, capsules: (PyObject, PyObject)) -> PyResult<RecordBatch> {
+    let (schema_obj, array_obj) = capsules;
+
+    unsafe {
+        let array_ptr =
+            pyo3::ffi::PyCapsule_GetPointer(array_obj.as_ptr(), c"arrow_array".as_ptr());
+        let schema_ptr =
+            pyo3::ffi::PyCapsule_GetPointer(schema_obj.as_ptr(), c"arrow_schema".as_ptr());
+
+        if array_ptr.is_null() || schema_ptr.is_null() {
+            return Err(PyErr::fetch(py));
+        }
+
+        let ffi_array = std::ptr::read(array_ptr as *const FFI_ArrowArray);
+        let ffi_schema = std::ptr::read(schema_ptr as *const FFI_ArrowSchema);
+
+        // Disarm the destructors in the capsules.
+        // This is necessary because from_ffi will take ownership and eventually call the release callback.
+        // If the capsule also has a destructor that calls release or frees the struct, it would double-free.
+        pyo3::ffi::PyCapsule_SetDestructor(array_obj.as_ptr(), None);
+        pyo3::ffi::PyCapsule_SetDestructor(schema_obj.as_ptr(), None);
+
+        let array_data = from_ffi(ffi_array, &ffi_schema)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{e}")))?;
+
+        let struct_array = StructArray::from(array_data);
+        Ok(RecordBatch::from(&struct_array))
     }
 }
 
@@ -435,5 +533,6 @@ fn _fwf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFieldSpec>()?;
     m.add_class::<PyFwfParser>()?;
     m.add_class::<PyFwfReader>()?;
+    m.add_class::<PyFwfWriter>()?;
     Ok(())
 }

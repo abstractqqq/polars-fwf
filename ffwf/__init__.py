@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import pyarrow as pa
 
-from ._fwf import DType, ErrorStrategy, FwfParser, FwfReader, PyFieldSpec
+from ._fwf import DType, ErrorStrategy, FwfParser, FwfReader, FwfWriter, PyFieldSpec
 
 try:
     __version__ = importlib.metadata.version("ffwf")
@@ -24,6 +24,10 @@ __all__ = [
     "ErrorStrategy",
     "read_fwf_arrow",
     "ArrowCapsule",
+    "validate_specs_arrow",
+    "write_fwf_arrow",
+    "infer_specs_arrow",
+    "read_fwf_pd",
 ]
 
 
@@ -124,14 +128,14 @@ class ArrowCapsule:
 
     def __init__(self, capsules: tuple):
         """
-        Initialize the adapter with a tuple of (array_capsule, schema_capsule).
+        Initialize the adapter with a tuple of (schema_capsule, array_capsule).
 
         Parameters
         ----------
         capsules : tuple
             A tuple containing the Arrow C Data Interface capsules.
         """
-        self.array_capsule, self.schema_capsule = capsules
+        self.schema_capsule, self.array_capsule = capsules
 
     def __arrow_c_array__(self, requested_schema=None):
         """
@@ -237,11 +241,215 @@ def read_fwf_arrow(
     return pa.Table.from_batches(batches)
 
 
+def validate_specs_arrow(table: pa.Table, specs: Sequence[PyFieldSpec]) -> list[str]:
+    """
+    Validate that the data in the Arrow Table satisfies the provided specifications.
+
+    Checks performed:
+    1. **Field Width**: Ensures no value exceeds the specified `length` in bytes.
+    2. **Line Breaks**: Ensures no string values contain `\\n` or `\\r`, which
+       would break the fixed-width physical layout.
+
+    Parameters
+    ----------
+    table : pa.Table
+        The Arrow Table to validate.
+    specs : Sequence[PyFieldSpec]
+        The field specifications defining the expected layout.
+
+    Returns
+    -------
+    list[str]
+        A list of violation messages. If empty, all data satisfies the specs.
+    """
+    import pyarrow.compute as pc
+
+    violations = []
+    for s in specs:
+        col = table[s.name]
+        str_col = pc.cast(col, pa.utf8())
+
+        # 1. Check lengths
+        lengths = pc.utf8_length(str_col)
+        max_len = pc.max(lengths).as_py() or 0
+
+        if max_len > s.length:
+            violations.append(
+                f"Column '{s.name}' has data longer ({max_len}) than specified length ({s.length})"
+            )
+
+        # 2. Check for newlines/carriages
+        if pa.types.is_string(str_col.type):
+            n_count = pc.sum(pc.count_substring(str_col, "\n")).as_py() or 0
+            r_count = pc.sum(pc.count_substring(str_col, "\r")).as_py() or 0
+            if n_count > 0 or r_count > 0:
+                violations.append(
+                    f"Column '{s.name}' contains {n_count + r_count} line break characters (\\n, \\r) "
+                    "which will corrupt the FWF layout."
+                )
+    return violations
+
+
+def infer_specs_arrow(
+    table: pa.Table,
+    decimals: int = 3,
+    infer_rows: int = 1000,
+) -> list[PyFieldSpec]:
+    """
+    Automatically infer column widths and types from an Arrow Table.
+    """
+    import pyarrow.compute as pc
+
+    sample = table.slice(0, infer_rows)
+    final_specs = []
+    offset = 0
+
+    for name in table.column_names:
+        col = sample[name]
+        dt = col.type
+
+        # Use DType mapping
+        if pa.types.is_integer(dt):
+            out_dtype = DType.I64  # Default to largest for inference
+        elif pa.types.is_floating(dt):
+            out_dtype = DType.F64
+        else:
+            out_dtype = DType.String
+
+        # Cast to string to find max length
+        str_col = pc.cast(col, pa.utf8())
+        lengths = pc.utf8_length(str_col)
+        max_len = pc.max(lengths).as_py() or 0
+
+        # Heuristic padding
+        if pa.types.is_floating(dt):
+            length = max_len + 1
+        elif pa.types.is_integer(dt):
+            length = max_len
+        else:
+            length = max_len + 5
+
+        final_specs.append(FieldSpec(name, offset, length, out_dtype))
+        offset += length
+    return final_specs
+
+
+def write_fwf_arrow(
+    table: pa.Table,
+    path: str,
+    specs: Sequence[PyFieldSpec] | None = None,
+    number_padding: str = " ",
+    str_padding: str = " ",
+    pad_str_end: bool = True,
+    decimals: int = 3,
+    bool_treatment: tuple[str, str, str] = ("T", "F", "null"),
+) -> dict[str, dict]:
+    """
+    Write a PyArrow Table to a Fixed-Width File (FWF) using a native Rust writer.
+
+    **Note**: This function does **not** perform data validation. If a value exceeds
+    the specified field length, it will be silently truncated. If a value contains
+    line breaks (\\n, \\r), it will corrupt the FWF layout. To validate your
+    data before writing, use :func:`validate_specs_arrow`.
+
+    table : pa.Table
+        The PyArrow Table to write.
+    path : str
+        The path to the output file.
+    specs : Sequence[PyFieldSpec] | None, optional
+        A sequence of FieldSpec objects defining the output layout.
+        If None, the specification is inferred.
+    number_padding : str, default " "
+        The padding character for numeric columns (right-aligned).
+    str_padding : str, default " "
+        The padding character for string columns.
+    pad_str_end : bool, default True
+        If True, string columns are left-aligned (padded at the end).
+        If False, string columns are right-aligned (padded at the start).
+    decimals : int, default 3
+        The precision for float columns. Floats are rounded to this value.
+    bool_treatment : tuple[str, str, str], default ("T", "F", "null")
+        The string representations for True, False, and Null boolean values.
+
+    Returns
+    -------
+    dict[str, dict]
+        The specification used to write the file.
+    """
+    if specs is None:
+        specs = infer_specs_arrow(table, decimals=decimals)
+
+    num_pad_byte = number_padding.encode("utf-8")[0]
+    str_pad_byte = str_padding.encode("utf-8")[0]
+
+    writer = FwfWriter(
+        path,
+        list(specs),
+        num_pad_byte,
+        str_pad_byte,
+        pad_str_end,
+        decimals,
+        bool_treatment,
+    )
+
+    for batch in table.to_batches():
+        # Arrow record batches in Python support the C Data Interface
+        # but PyO3 doesn't automatically handle them. We need capsules.
+        # However, pa.RecordBatch.__arrow_c_array__ returns the capsules.
+        writer.write_batch(batch.__arrow_c_array__())
+
+    writer.flush()
+
+    # Build return spec map
+    spec_map = {}
+    for s in specs:
+        spec_map[s.name] = {
+            "offset": s.offset,
+            "length": s.length,
+            "dtype": str(s.dtype),
+        }
+    return spec_map
+
+
+def read_fwf_pd(
+    path: str,
+    specs: Sequence[PyFieldSpec],
+    line_length: int | None = None,
+    newline: str | bytes = "\n",
+    chunk_size: int | None = None,
+    parallel: bool = True,
+) -> Any:
+    """
+    Read a fixed-width file into a Pandas DataFrame.
+    """
+    table = read_fwf_arrow(
+        path,
+        specs,
+        line_length=line_length,
+        newline=newline,
+        chunk_size=chunk_size,
+        parallel=parallel,
+    )
+    return table.to_pandas()
+
+
 # Polars support
 try:
-    from .polars import read_fwf_pl, scan_fwf_pl, sink_fwf_pl, write_fwf_pl
+    from .polars import (
+        read_fwf_pl,
+        scan_fwf_pl,
+        sink_fwf_pl,
+        validate_specs_pl,
+        write_fwf_pl,
+    )
 
-    __all__ += ["read_fwf_pl", "scan_fwf_pl", "write_fwf_pl", "sink_fwf_pl"]
+    __all__ += [
+        "read_fwf_pl",
+        "scan_fwf_pl",
+        "write_fwf_pl",
+        "sink_fwf_pl",
+        "validate_specs_pl",
+    ]
 except ImportError:
     pass
 

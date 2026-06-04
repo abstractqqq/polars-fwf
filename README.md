@@ -68,27 +68,27 @@ specs = [fw.FieldSpec("id", 0, 5, "int")]
 df = fw.read_fwf_pd("data.fwf", specs)
 ```
 
-## Writing Fixed-Width Files (Polars)
+## Writing Fixed-Width Files
 
-`ffwf` provides eager (`write_fwf_pl`) and streaming (`sink_fwf_pl`) writers.
+`ffwf` provides high-performance eager (`write_fwf_pl`) and streaming (`sink_fwf_pl`) writers.
+
+**⚠️ Important**: Writing functions do **not** perform automatic validation. If a value exceeds the specified width, it will be **silently truncated**. You should manually call validation functions before writing if you need to ensure data integrity.
 
 ### Eager Writing (DataFrame)
 
 ```python
-# Automatic inference of widths and types
-specs = fw.write_fwf_pl(df, "output.fwf")
+# 1. (Optional) Validate data satisfies specs
+violations = fw.validate_specs_pl(df, specs)
+if violations:
+    raise ValueError(f"Validation failed: {violations}")
 
-# Explicit specification
-specs = [
-    fw.FieldSpec("id", 0, 5, "int"),
-    fw.FieldSpec("val", 5, 10, "float")
-]
+# 2. Write (truncates if data exceeds width)
 fw.write_fwf_pl(df, "output.fwf", specs=specs)
 ```
 
 ### Streaming Writing (LazyFrame)
 
-For large datasets, use `sink_fwf_pl` to validate and write data batch-by-batch without loading the entire frame into memory.
+For large datasets, use `sink_fwf_pl` to write data batch-by-batch without loading the entire frame into memory.
 
 ```python
 # Streaming write
@@ -153,7 +153,7 @@ table = fw.read_fwf_arrow("data.fwf", specs)
 
 ### Writing FWF
 
-Please note that **writing FWF files is only available with Polars** as of now, via `fw.write_fwf_pl` and the streaming `fw.sink_fwf_pl` variant.
+Writing is supported for **Polars** (`write_fwf_pl`, `sink_fwf_pl`), **PyArrow** (`write_fwf_arrow`), and **Pandas** (via Arrow). The core writer is implemented in Rust for maximum performance.
 
 ## Building Locally
 

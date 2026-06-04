@@ -1,13 +1,15 @@
 use arrow_array::builder::{GenericByteViewBuilder, PrimitiveBuilder};
+use arrow_array::cast::AsArray;
 use arrow_array::types::{
     Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, StringViewType, UInt8Type,
     UInt16Type, UInt32Type, UInt64Type,
 };
-use arrow_array::{ArrayRef, RecordBatch};
+use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::sync::Arc;
 
 pub static WHITESPACE_LUT: [u8; 256] = {
@@ -479,5 +481,166 @@ impl FwfReader {
         let batches = self.parser.parse(&self.mmap[self.offset..actual_end]);
         self.offset = actual_end;
         batches
+    }
+}
+
+pub struct FwfWriter<W: Write> {
+    writer: BufWriter<W>,
+    specs: Vec<FieldSpec>,
+    number_padding: u8,
+    str_padding: u8,
+    pad_str_end: bool,
+    decimals: usize,
+    bool_treatment: (String, String, String), // True, False, Null
+}
+
+impl<W: Write> FwfWriter<W> {
+    pub fn new(
+        writer: W,
+        specs: Vec<FieldSpec>,
+        number_padding: u8,
+        str_padding: u8,
+        pad_str_end: bool,
+        decimals: usize,
+        bool_treatment: (String, String, String),
+    ) -> Self {
+        Self {
+            writer: BufWriter::new(writer),
+            specs,
+            number_padding,
+            str_padding,
+            pad_str_end,
+            decimals,
+            bool_treatment,
+        }
+    }
+
+    pub fn write_batch(&mut self, batch: &RecordBatch) -> std::io::Result<()> {
+        let num_rows = batch.num_rows();
+        let columns: Vec<(&FieldSpec, &ArrayRef)> = self
+            .specs
+            .iter()
+            .map(|s| {
+                (
+                    s,
+                    batch
+                        .column_by_name(&s.name)
+                        .unwrap_or_else(|| panic!("Column {} not found in batch", s.name)),
+                )
+            })
+            .collect();
+
+        let mut num_buf = [0u8; 128];
+        let float_options = lexical_core::WriteFloatOptions::builder()
+            .max_significant_digits(std::num::NonZeroUsize::new(self.decimals))
+            .trim_floats(true)
+            .build()
+            .unwrap();
+
+        for row_idx in 0..num_rows {
+            for (spec, col) in &columns {
+                let formatted: &[u8] = if col.is_null(row_idx) {
+                    &[]
+                } else {
+                    match col.data_type() {
+                        DataType::Int8 => lexical_core::write(
+                            col.as_primitive::<Int8Type>().value(row_idx),
+                            &mut num_buf,
+                        ),
+                        DataType::Int16 => lexical_core::write(
+                            col.as_primitive::<Int16Type>().value(row_idx),
+                            &mut num_buf,
+                        ),
+                        DataType::Int32 => lexical_core::write(
+                            col.as_primitive::<Int32Type>().value(row_idx),
+                            &mut num_buf,
+                        ),
+                        DataType::Int64 => lexical_core::write(
+                            col.as_primitive::<Int64Type>().value(row_idx),
+                            &mut num_buf,
+                        ),
+                        DataType::UInt8 => lexical_core::write(
+                            col.as_primitive::<UInt8Type>().value(row_idx),
+                            &mut num_buf,
+                        ),
+                        DataType::UInt16 => lexical_core::write(
+                            col.as_primitive::<UInt16Type>().value(row_idx),
+                            &mut num_buf,
+                        ),
+                        DataType::UInt32 => lexical_core::write(
+                            col.as_primitive::<UInt32Type>().value(row_idx),
+                            &mut num_buf,
+                        ),
+                        DataType::UInt64 => lexical_core::write(
+                            col.as_primitive::<UInt64Type>().value(row_idx),
+                            &mut num_buf,
+                        ),
+                        DataType::Float32 => lexical_core::write_with_options::<
+                            f32,
+                            { lexical_core::format::STANDARD },
+                        >(
+                            col.as_primitive::<Float32Type>().value(row_idx),
+                            &mut num_buf,
+                            &float_options,
+                        ),
+                        DataType::Float64 => lexical_core::write_with_options::<
+                            f64,
+                            { lexical_core::format::STANDARD },
+                        >(
+                            col.as_primitive::<Float64Type>().value(row_idx),
+                            &mut num_buf,
+                            &float_options,
+                        ),
+                        DataType::Utf8 => col.as_string::<i32>().value(row_idx).as_bytes(),
+                        DataType::LargeUtf8 => col.as_string::<i64>().value(row_idx).as_bytes(),
+                        DataType::Utf8View => col.as_string_view().value(row_idx).as_bytes(),
+                        DataType::Boolean => {
+                            if col.as_boolean().value(row_idx) {
+                                self.bool_treatment.0.as_bytes()
+                            } else {
+                                self.bool_treatment.1.as_bytes()
+                            }
+                        }
+                        _ => &[],
+                    }
+                };
+
+                let formatted = if formatted.is_empty() && col.is_null(row_idx) {
+                    self.bool_treatment.2.as_bytes()
+                } else {
+                    formatted
+                };
+
+                let len = formatted.len().min(spec.length);
+                let truncated = &formatted[..len];
+
+                let is_numeric = col.data_type().is_numeric();
+                let pad_char = if is_numeric {
+                    self.number_padding
+                } else {
+                    self.str_padding
+                };
+
+                if is_numeric || !self.pad_str_end {
+                    // Right align
+                    for _ in 0..(spec.length - len) {
+                        self.writer.write_all(&[pad_char])?;
+                    }
+                    self.writer.write_all(truncated)?;
+                } else {
+                    // Left align
+                    self.writer.write_all(truncated)?;
+                    for _ in 0..(spec.length - len) {
+                        self.writer.write_all(&[pad_char])?;
+                    }
+                }
+            }
+            self.writer.write_all(b"\n")?;
+        }
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
     }
 }
