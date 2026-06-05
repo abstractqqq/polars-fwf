@@ -15,7 +15,7 @@ arrow-data = "53"
 lexical-core = { version = "1.0", default-features = false, features = ["parse-floats", "parse-integers", "write-floats", "write-integers"] }
 memmap2 = "0.9"
 rayon = "1.10"
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py39"] }
 
 [profile.release]
 codegen-units = 1

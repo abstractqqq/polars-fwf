@@ -273,6 +273,52 @@ wheels = [
 ]
 
 [[package]]
+name = "ffwf"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "pyarrow", version = "21.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "pyarrow", version = "24.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "pandas" },
+    { name = "polars", version = "1.36.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "polars", version = "1.40.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
+dev = [
+    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "pandas" },
+    { name = "polars", version = "1.36.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "polars", version = "1.40.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "pytest", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "pytest", version = "9.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
+pandas = [
+    { name = "pandas" },
+]
+polars = [
+    { name = "polars", version = "1.36.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "polars", version = "1.40.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ffwf", extras = ["all"], marker = "extra == 'dev'" },
+    { name = "matplotlib", marker = "extra == 'dev'" },
+    { name = "pandas", marker = "extra == 'all'" },
+    { name = "pandas", marker = "extra == 'dev'", specifier = "==2.2.3" },
+    { name = "pandas", marker = "extra == 'pandas'" },
+    { name = "polars", marker = "extra == 'all'", specifier = ">=1.34" },
+    { name = "polars", marker = "extra == 'polars'", specifier = ">=1.34" },
+    { name = "pyarrow", specifier = ">=13" },
+    { name = "pytest", marker = "extra == 'dev'" },
+]
+provides-extras = ["polars", "pandas", "all", "dev"]
+
+[[package]]
 name = "fonttools"
 version = "4.60.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1343,36 +1389,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/b3/8c/bc9bc948058348ed4
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ea/91/74fc60d94488685a92ac9d49d7ec55f3e91fe9b77942a6235a5fa7f249c3/polars-1.40.1-py3-none-any.whl", hash = "sha256:c0f861219d1319cdea45c4ce4d30355a47176b8f98dcedf95ea8269f131b8abd", size = 828723, upload-time = "2026-04-22T19:14:25.452Z" },
 ]
-
-[[package]]
-name = "polars-fwf"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "polars", version = "1.36.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "polars", version = "1.40.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "pandas" },
-    { name = "pyarrow", version = "21.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "pyarrow", version = "24.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-    { name = "pytest", version = "8.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
-    { name = "pytest", version = "9.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "matplotlib", marker = "extra == 'dev'" },
-    { name = "pandas", marker = "extra == 'dev'", specifier = "==2.2.3" },
-    { name = "polars", specifier = ">=1.34" },
-    { name = "pyarrow", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "polars-runtime-32"

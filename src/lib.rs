@@ -9,7 +9,7 @@ use std::fs::File;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[pyclass(name = "DType", eq, eq_int)]
+#[pyclass(name = "DType", eq, eq_int, from_py_object)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PyDType {
     I8,
@@ -67,7 +67,7 @@ impl From<PyDType> for core::DType {
     }
 }
 
-#[pyclass(name = "ErrorStrategy", eq)]
+#[pyclass(name = "ErrorStrategy", eq, from_py_object)]
 #[derive(Clone, PartialEq)]
 pub enum PyErrorStrategy {
     PushNull(),
@@ -95,7 +95,7 @@ impl PyErrorStrategy {
     }
 }
 
-#[pyclass(name = "PyFieldSpec")]
+#[pyclass(name = "PyFieldSpec", from_py_object)]
 #[derive(Clone)]
 pub struct PyFieldSpec {
     /// The name of the field.
@@ -313,7 +313,7 @@ impl PyFwfParser {
         core::FwfParser::infer_chunk_size(&core_specs)
     }
 
-    pub fn parse(&self, py: Python, data: &[u8]) -> PyResult<Vec<PyObject>> {
+    pub fn parse<'py>(&self, py: Python<'py>, data: &[u8]) -> PyResult<Vec<Bound<'py, PyAny>>> {
         let batches = self.inner.parse(data);
         let mut py_batches = Vec::with_capacity(batches.len());
         for batch in batches {
@@ -322,7 +322,11 @@ impl PyFwfParser {
         Ok(py_batches)
     }
 
-    pub fn _parse_path(&self, py: Python, path: &str) -> PyResult<Vec<PyObject>> {
+    pub fn _parse_path<'py>(
+        &self,
+        py: Python<'py>,
+        path: &str,
+    ) -> PyResult<Vec<Bound<'py, PyAny>>> {
         let batches = self
             .inner
             .parse_path(path)
@@ -375,7 +379,7 @@ impl PyFwfReader {
         Ok(Self { inner })
     }
 
-    pub fn next_burst(&mut self, py: Python) -> PyResult<Vec<PyObject>> {
+    pub fn next_burst<'py>(&mut self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyAny>>> {
         let batches = self.inner.next_burst();
         let mut py_batches = Vec::with_capacity(batches.len());
         for batch in batches {
@@ -466,7 +470,10 @@ unsafe extern "C" fn schema_destructor(capsule: *mut pyo3::ffi::PyObject) {
     }
 }
 
-fn record_batch_to_capsule(py: Python, batch: RecordBatch) -> PyResult<PyObject> {
+fn record_batch_to_capsule<'py>(
+    py: Python<'py>,
+    batch: RecordBatch,
+) -> PyResult<Bound<'py, PyAny>> {
     let struct_array: StructArray = batch.into();
     let array_data = struct_array.to_data();
 
@@ -493,40 +500,13 @@ fn record_batch_to_capsule(py: Python, batch: RecordBatch) -> PyResult<PyObject>
             return Err(PyErr::fetch(py));
         }
 
-        let array_obj = PyObject::from_owned_ptr(py, array_capsule);
-        let schema_obj = PyObject::from_owned_ptr(py, schema_capsule);
+        let array_obj = Bound::from_owned_ptr(py, array_capsule);
+        let schema_obj = Bound::from_owned_ptr(py, schema_capsule);
 
-        Ok((schema_obj, array_obj).into_py(py))
-    }
-}
-
-fn capsule_to_record_batch(py: Python, capsules: (PyObject, PyObject)) -> PyResult<RecordBatch> {
-    let (schema_obj, array_obj) = capsules;
-
-    unsafe {
-        let array_ptr =
-            pyo3::ffi::PyCapsule_GetPointer(array_obj.as_ptr(), c"arrow_array".as_ptr());
-        let schema_ptr =
-            pyo3::ffi::PyCapsule_GetPointer(schema_obj.as_ptr(), c"arrow_schema".as_ptr());
-
-        if array_ptr.is_null() || schema_ptr.is_null() {
-            return Err(PyErr::fetch(py));
-        }
-
-        let ffi_array = std::ptr::read(array_ptr as *const FFI_ArrowArray);
-        let ffi_schema = std::ptr::read(schema_ptr as *const FFI_ArrowSchema);
-
-        // Disarm the destructors in the capsules.
-        // This is necessary because from_ffi will take ownership and eventually call the release callback.
-        // If the capsule also has a destructor that calls release or frees the struct, it would double-free.
-        pyo3::ffi::PyCapsule_SetDestructor(array_obj.as_ptr(), None);
-        pyo3::ffi::PyCapsule_SetDestructor(schema_obj.as_ptr(), None);
-
-        let array_data = from_ffi(ffi_array, &ffi_schema)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{e}")))?;
-
-        let struct_array = StructArray::from(array_data);
-        Ok(RecordBatch::from(&struct_array))
+        Ok((array_obj, schema_obj)
+            .into_pyobject(py)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{}", e)))?
+            .into_any())
     }
 }
 
