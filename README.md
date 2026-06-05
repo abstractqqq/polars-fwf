@@ -19,7 +19,11 @@ While formats like CSV are more common, Fixed-Width Files (FWF) provide a more r
 
 The core package provides `read_fwf_arrow` for PyArrow. Integration for Polars and Pandas is available via optional modules.
 
-### PyArrow (Default)
+## Usage
+
+The core package is **Arrow-native**. It returns zero-copy PyArrow Tables, making it compatible with any modern data tool.
+
+### PyArrow (Core)
 
 ```python
 import ffwf as fw
@@ -33,42 +37,25 @@ specs = [
 table = fw.read_fwf_arrow("data.fwf", specs)
 ```
 
-### Polars (Highly Recommended)
+### Integration (Pandas & Others)
 
-Unlock the best performance and streaming capabilities. Polars functions are available directly from `ffwf`.
-
-```python
-import polars as pl
-import ffwf as fw
-
-# 1. Define field specifications
-specs = [
-    fw.FieldSpec("id", offset=0, length=5, dtype="int"),
-    fw.FieldSpec("val", offset=5, length=10, dtype="float"),
-    fw.FieldSpec("tag", offset=15, length=5, dtype="str"),
-]
-
-# 2. Eager parsing (returns pl.DataFrame)
-df = fw.read_fwf_pl("data.fwf", specs)
-
-# 3. Lazy parsing (returns pl.LazyFrame)
-lazy_df = fw.scan_fwf_pl("data.fwf", specs)
-
-result = lazy_df.filter(pl.col("val") > 100.0).group_by("tag").count().collect()
-```
-
-### Pandas
-
-For existing Pandas workflows, `ffwf` provides a simple wrapper that parses via Arrow.
+`ffwf` does not provide built-in wrappers for Pandas or other dataframe libraries. To use `ffwf` with Pandas, simply convert the Arrow table:
 
 ```python
 import ffwf as fw
 
-specs = [fw.FieldSpec("id", 0, 5, "int")]
-df = fw.read_fwf_pd("data.fwf", specs)
+specs = [...]
+# 1. Parse to Arrow
+table = fw.read_fwf_arrow("data.fwf", specs)
+
+# 2. Convert to Pandas (zero-copy where possible)
+df = table.to_pandas()
 ```
 
-## Writing Fixed-Width Files
+This pattern applies to any library supporting the Arrow interface (DuckDB, Daft, Ibis, etc.).
+
+### Polars (Optional Integration)
+
 
 `ffwf` provides high-performance eager (`write_fwf_pl`) and streaming (`sink_fwf_pl`) writers.
 

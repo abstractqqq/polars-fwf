@@ -27,7 +27,6 @@ __all__ = [
     "validate_specs_arrow",
     "write_fwf_arrow",
     "infer_specs_arrow",
-    "read_fwf_pd",
 ]
 
 
@@ -411,28 +410,6 @@ def write_fwf_arrow(
     return spec_map
 
 
-def read_fwf_pd(
-    path: str,
-    specs: Sequence[PyFieldSpec],
-    line_length: int | None = None,
-    newline: str | bytes = "\n",
-    chunk_size: int | None = None,
-    parallel: bool = True,
-) -> Any:
-    """
-    Read a fixed-width file into a Pandas DataFrame.
-    """
-    table = read_fwf_arrow(
-        path,
-        specs,
-        line_length=line_length,
-        newline=newline,
-        chunk_size=chunk_size,
-        parallel=parallel,
-    )
-    return table.to_pandas()
-
-
 # Polars support
 try:
     from .polars import (
@@ -450,13 +427,5 @@ try:
         "sink_fwf_pl",
         "validate_specs_pl",
     ]
-except ImportError:
-    pass
-
-# Pandas support
-try:
-    from .pandas import read_fwf_pd
-
-    __all__ += ["read_fwf_pd"]
 except ImportError:
     pass
