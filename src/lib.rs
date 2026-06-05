@@ -2,6 +2,7 @@ mod core;
 
 use arrow_array::ffi::{FFI_ArrowArray, FFI_ArrowSchema, from_ffi};
 use arrow_array::{Array, RecordBatch, StructArray};
+use pyo3::PyObject;
 use pyo3::prelude::*;
 use std::fs::File;
 

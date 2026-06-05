@@ -26,6 +26,17 @@ def generate_benchmark_data(num_rows=200_000, num_cols=100):
 
 
 def run_write_benchmark():
+    """
+    Compare ffwf write performance against Polars and Pandas CSV writers.
+    """
+    # Rationale: FWF is structurally simpler than CSV (no delimiters to escape, no complex quoting).
+    # A high-performance FWF writer should theoretically match or exceed the speed of a CSV writer.
+    # We use Polars CSV as the "speed of light" baseline for optimized IO.
+    print("\n--- Write Performance Comparison ---")
+    print("Rationale: FWF is structurally simpler than CSV (no escaping/quoting).")
+    print("A high-performance FWF writer should match or beat Polars' CSV speed.")
+    print("------------------------------------\n")
+
     num_rows = 500_000
     num_cols = 100
     df_pl, df_pd = generate_benchmark_data(num_rows, num_cols)
