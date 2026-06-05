@@ -120,7 +120,20 @@ The following benchmarks compare `ffwf` against `pandas.read_fwf` (v2.2.3) using
 | **ffwf (Seq)** | 0.51s | 0.51s | 0.51s |
 | **ffwf (Par)** | **0.09s** | **0.08s** | **0.08s** |
 
-*Benchmarks conducted on a 16-core machine. ffwf is **~170x faster** than Pandas for pure reading and **~200x faster** for filtered pipelines.*
+### Write Performance
+
+We compare `ffwf` write performance against **Polars CSV** and **Pandas CSV**. 
+
+**Why compare against CSV?**
+FWF is structurally simpler than CSV (no delimiters to escape, no complex quoting rules). Therefore, a high-performance FWF writer should theoretically match or exceed the speed of a CSV writer. We use Polars as the baseline because it represents the "speed of light" for data IO in the Python ecosystem.
+
+| Method | Format | Time (500k rows) |
+| :--- | :--- | :--- |
+| **Pandas** | CSV | 24.21s |
+| **Polars** | CSV | 0.60s |
+| **ffwf** | **FWF** | **0.57s** |
+
+*ffwf is **~40x faster** than Pandas and achieves parity with Polars' world-class CSV writer by using parallel formatting and vectorized Arrow processing.*
 
 ### Visualization
 

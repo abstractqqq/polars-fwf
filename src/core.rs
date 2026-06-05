@@ -517,6 +517,12 @@ impl<W: Write> FwfWriter<W> {
 
     pub fn write_batch(&mut self, batch: &RecordBatch) -> std::io::Result<()> {
         let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(());
+        }
+
+        let line_length: usize = self.specs.iter().map(|s| s.length).sum::<usize>() + 1; // +1 for \n
+
         let columns: Vec<(&FieldSpec, &ArrayRef)> = self
             .specs
             .iter()
@@ -530,113 +536,140 @@ impl<W: Write> FwfWriter<W> {
             })
             .collect();
 
-        let mut num_buf = [0u8; 128];
         let float_options = lexical_core::WriteFloatOptions::builder()
             .max_significant_digits(std::num::NonZeroUsize::new(self.decimals))
             .trim_floats(true)
             .build()
             .unwrap();
 
-        for row_idx in 0..num_rows {
-            for (spec, col) in &columns {
-                let formatted: &[u8] = if col.is_null(row_idx) {
-                    &[]
-                } else {
-                    match col.data_type() {
-                        DataType::Int8 => lexical_core::write(
-                            col.as_primitive::<Int8Type>().value(row_idx),
-                            &mut num_buf,
-                        ),
-                        DataType::Int16 => lexical_core::write(
-                            col.as_primitive::<Int16Type>().value(row_idx),
-                            &mut num_buf,
-                        ),
-                        DataType::Int32 => lexical_core::write(
-                            col.as_primitive::<Int32Type>().value(row_idx),
-                            &mut num_buf,
-                        ),
-                        DataType::Int64 => lexical_core::write(
-                            col.as_primitive::<Int64Type>().value(row_idx),
-                            &mut num_buf,
-                        ),
-                        DataType::UInt8 => lexical_core::write(
-                            col.as_primitive::<UInt8Type>().value(row_idx),
-                            &mut num_buf,
-                        ),
-                        DataType::UInt16 => lexical_core::write(
-                            col.as_primitive::<UInt16Type>().value(row_idx),
-                            &mut num_buf,
-                        ),
-                        DataType::UInt32 => lexical_core::write(
-                            col.as_primitive::<UInt32Type>().value(row_idx),
-                            &mut num_buf,
-                        ),
-                        DataType::UInt64 => lexical_core::write(
-                            col.as_primitive::<UInt64Type>().value(row_idx),
-                            &mut num_buf,
-                        ),
-                        DataType::Float32 => lexical_core::write_with_options::<
-                            f32,
-                            { lexical_core::format::STANDARD },
-                        >(
-                            col.as_primitive::<Float32Type>().value(row_idx),
-                            &mut num_buf,
-                            &float_options,
-                        ),
-                        DataType::Float64 => lexical_core::write_with_options::<
-                            f64,
-                            { lexical_core::format::STANDARD },
-                        >(
-                            col.as_primitive::<Float64Type>().value(row_idx),
-                            &mut num_buf,
-                            &float_options,
-                        ),
-                        DataType::Utf8 => col.as_string::<i32>().value(row_idx).as_bytes(),
-                        DataType::LargeUtf8 => col.as_string::<i64>().value(row_idx).as_bytes(),
-                        DataType::Utf8View => col.as_string_view().value(row_idx).as_bytes(),
-                        DataType::Boolean => {
-                            if col.as_boolean().value(row_idx) {
-                                self.bool_treatment.0.as_bytes()
-                            } else {
-                                self.bool_treatment.1.as_bytes()
+        let number_padding = self.number_padding;
+        let str_padding = self.str_padding;
+        let pad_str_end = self.pad_str_end;
+        let bool_treatment = &self.bool_treatment;
+
+        // Use rayon to format rows in parallel into a large buffer
+        let chunk_size = 1024;
+        let row_chunks: Vec<_> = (0..num_rows).collect::<Vec<_>>();
+        let formatted_chunks: Vec<Vec<u8>> = row_chunks
+            .par_chunks(chunk_size)
+            .map(|chunk_indices| {
+                let mut buffer = Vec::with_capacity(chunk_indices.len() * line_length);
+                let mut num_buf = [0u8; 128];
+
+                for &row_idx in chunk_indices {
+                    let row_start = buffer.len();
+                    for (spec, col) in &columns {
+                        let formatted: &[u8] = if col.is_null(row_idx) {
+                            &[]
+                        } else {
+                            match col.data_type() {
+                                DataType::Int8 => lexical_core::write(
+                                    col.as_primitive::<Int8Type>().value(row_idx),
+                                    &mut num_buf,
+                                ),
+                                DataType::Int16 => lexical_core::write(
+                                    col.as_primitive::<Int16Type>().value(row_idx),
+                                    &mut num_buf,
+                                ),
+                                DataType::Int32 => lexical_core::write(
+                                    col.as_primitive::<Int32Type>().value(row_idx),
+                                    &mut num_buf,
+                                ),
+                                DataType::Int64 => lexical_core::write(
+                                    col.as_primitive::<Int64Type>().value(row_idx),
+                                    &mut num_buf,
+                                ),
+                                DataType::UInt8 => lexical_core::write(
+                                    col.as_primitive::<UInt8Type>().value(row_idx),
+                                    &mut num_buf,
+                                ),
+                                DataType::UInt16 => lexical_core::write(
+                                    col.as_primitive::<UInt16Type>().value(row_idx),
+                                    &mut num_buf,
+                                ),
+                                DataType::UInt32 => lexical_core::write(
+                                    col.as_primitive::<UInt32Type>().value(row_idx),
+                                    &mut num_buf,
+                                ),
+                                DataType::UInt64 => lexical_core::write(
+                                    col.as_primitive::<UInt64Type>().value(row_idx),
+                                    &mut num_buf,
+                                ),
+                                DataType::Float32 => lexical_core::write_with_options::<
+                                    f32,
+                                    { lexical_core::format::STANDARD },
+                                >(
+                                    col.as_primitive::<Float32Type>().value(row_idx),
+                                    &mut num_buf,
+                                    &float_options,
+                                ),
+                                DataType::Float64 => lexical_core::write_with_options::<
+                                    f64,
+                                    { lexical_core::format::STANDARD },
+                                >(
+                                    col.as_primitive::<Float64Type>().value(row_idx),
+                                    &mut num_buf,
+                                    &float_options,
+                                ),
+                                DataType::Utf8 => col.as_string::<i32>().value(row_idx).as_bytes(),
+                                DataType::LargeUtf8 => {
+                                    col.as_string::<i64>().value(row_idx).as_bytes()
+                                }
+                                DataType::Utf8View => {
+                                    col.as_string_view().value(row_idx).as_bytes()
+                                }
+                                DataType::Boolean => {
+                                    if col.as_boolean().value(row_idx) {
+                                        bool_treatment.0.as_bytes()
+                                    } else {
+                                        bool_treatment.1.as_bytes()
+                                    }
+                                }
+                                _ => &[],
+                            }
+                        };
+
+                        let formatted = if formatted.is_empty() && col.is_null(row_idx) {
+                            bool_treatment.2.as_bytes()
+                        } else {
+                            formatted
+                        };
+
+                        let len = formatted.len().min(spec.length);
+                        let truncated = &formatted[..len];
+
+                        let is_numeric = col.data_type().is_numeric();
+                        let pad_char = if is_numeric {
+                            number_padding
+                        } else {
+                            str_padding
+                        };
+
+                        if is_numeric || !pad_str_end {
+                            // Right align
+                            for _ in 0..(spec.length - len) {
+                                buffer.push(pad_char);
+                            }
+                            buffer.extend_from_slice(truncated);
+                        } else {
+                            // Left align
+                            buffer.extend_from_slice(truncated);
+                            for _ in 0..(spec.length - len) {
+                                buffer.push(pad_char);
                             }
                         }
-                        _ => &[],
                     }
-                };
-
-                let formatted = if formatted.is_empty() && col.is_null(row_idx) {
-                    self.bool_treatment.2.as_bytes()
-                } else {
-                    formatted
-                };
-
-                let len = formatted.len().min(spec.length);
-                let truncated = &formatted[..len];
-
-                let is_numeric = col.data_type().is_numeric();
-                let pad_char = if is_numeric {
-                    self.number_padding
-                } else {
-                    self.str_padding
-                };
-
-                if is_numeric || !self.pad_str_end {
-                    // Right align
-                    for _ in 0..(spec.length - len) {
-                        self.writer.write_all(&[pad_char])?;
-                    }
-                    self.writer.write_all(truncated)?;
-                } else {
-                    // Left align
-                    self.writer.write_all(truncated)?;
-                    for _ in 0..(spec.length - len) {
-                        self.writer.write_all(&[pad_char])?;
-                    }
+                    buffer.push(b'\n');
+                    debug_assert_eq!(buffer.len() - row_start, line_length);
                 }
-            }
-            self.writer.write_all(b"\n")?;
+                buffer
+            })
+            .collect();
+
+        for chunk in formatted_chunks {
+            self.writer.write_all(&chunk)?;
         }
+
         Ok(())
     }
 

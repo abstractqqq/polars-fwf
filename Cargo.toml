@@ -21,3 +21,9 @@ pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
 codegen-units = 1
 strip = true
 lto = "fat"
+
+[target.'cfg(all(target_family = "unix", not(target_os = "macos"), not(target_os = "emscripten")))'.dependencies]
+tikv-jemallocator = { version = "0.7.0", features = ["disable_initial_exec_tls", "background_threads"] }
+
+[target.'cfg(all(target_family = "unix", target_os = "macos"))'.dependencies]
+tikv-jemallocator = { version = "0.7.0", features = ["disable_initial_exec_tls"] }

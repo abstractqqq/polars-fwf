@@ -5,6 +5,10 @@ use arrow_array::{Array, RecordBatch, StructArray};
 use pyo3::prelude::*;
 use std::fs::File;
 
+#[cfg(all(unix, not(target_os = "emscripten")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[pyclass(name = "DType", eq, eq_int)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PyDType {
